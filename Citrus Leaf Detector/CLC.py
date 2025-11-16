@@ -6,35 +6,43 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap, QFont
 from PyQt6.QtCore import Qt
 
+# --- SOLUSI ERROR QWidget ---
+# QApplication HARUS diinisialisasi sebelum widget apapun (termasuk QMessageBox) dibuat.
+app = QApplication(sys.argv)
+
 # Impor Backend
 try:
     from citrus_predictor import CitrusPredictor, CLASS_NAMES
 except ImportError:
-    QMessageBox.critical(None, "Import Error", "Gagal mengimpor citrus_predictor.py")
+    QMessageBox.critical(None, "Import Error", "Gagal mengimpor citrus_predictor.py. Pastikan file ada.")
+    sys.exit(1)
+except FileNotFoundError as e:
+    # Tangani error FileNotFoundError spesifik dari CitrusPredictor._load_model
+    QMessageBox.critical(None, "File Model Error", f"Model tidak ditemukan: {e}")
     sys.exit(1)
 except Exception as e:
-    QMessageBox.critical(None, "Model Error", f"Gagal memuat model awal: {e}")
+    QMessageBox.critical(None, "Model Error", f"Gagal memuat model PyTorch: {e}")
     sys.exit(1)
-
+# --- End of SOLUSI ---
 
 class CitrusClassifierApp(QWidget):
     def __init__(self):
         super().__init__()
         self.predictor = None
-        self.setWindowTitle("🍊 Citrus Disease Classifier")
+        self.setWindowTitle("🍊 Citrus Disease Classifier (EfficientNetV2-L)")
         self.setGeometry(100, 100, 800, 600)
         self.init_ui()
-        self.load_model()
+        self.load_model_instance()
 
-    def load_model(self):
+    def load_model_instance(self):
+        """Memuat instance model (sudah diimpor di atas, ini hanya set atribut)."""
         try:
-            self.status_label.setText("Memuat model...")
-            QApplication.processEvents()
-            self.predictor = CitrusPredictor()
             self.status_label.setText("Model siap. Pilih gambar.")
+            self.predictor = CitrusPredictor()
             self.predict_button.setEnabled(True)
-        except Exception as e:
-            self.status_label.setText(f"ERROR: Model gagal dimuat. Cek {self.predictor.MODEL_PATH} dan dependensi.")
+        except Exception:
+            # Kegagalan serius sudah ditangkap di blok try/except awal
+            self.status_label.setText("ERROR: Model tidak dapat dijalankan.")
             self.predict_button.setEnabled(False)
 
     def init_ui(self):
@@ -47,7 +55,7 @@ class CitrusClassifierApp(QWidget):
         left_panel.addWidget(self.select_button)
         
         self.path_input = QLineEdit(readOnly=True)
-        left_panel.addWidget(QLabel("Path:"))
+        left_panel.addWidget(QLabel("Path Gambar:"))
         left_panel.addWidget(self.path_input)
 
         self.predict_button = QPushButton("2. Prediksi")
@@ -62,7 +70,7 @@ class CitrusClassifierApp(QWidget):
         left_panel.addWidget(QLabel("--- Hasil ---"))
         self.result_label = QLabel("Hasil:")
         self.result_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        self.result_label.setStyleSheet("color: blue;")
+        self.result_label.setStyleSheet("color: darkgreen;")
         left_panel.addWidget(self.result_label)
 
         self.confidence_label = QLabel("Keyakinan:")
@@ -90,7 +98,8 @@ class CitrusClassifierApp(QWidget):
 
     def select_image(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 
-            "Pilih Gambar", "", "Image Files (*.png *.jpg *.jpeg)"
+            "Pilih Gambar Daun Jeruk", 
+            "", "Image Files (*.png *.jpg *.jpeg)"
         )
         if file_name:
             self.path_input.setText(file_name)
@@ -119,8 +128,8 @@ class CitrusClassifierApp(QWidget):
             return
 
         self.status_label.setText("Memprediksi...")
-        QApplication.processEvents()
-        
+        QApplication.processEvents() # Paksa GUI update status
+
         # Panggil Prediksi
         predicted_class, confidence, details = self.predictor.predict(image_path)
 
@@ -135,14 +144,15 @@ class CitrusClassifierApp(QWidget):
         self.confidence_label.setText(f"Keyakinan: {confidence:.2f}%")
         
         detail_text = "Detail Probabilitas:\n"
-        for k, v in details.items():
-            detail_text += f"- {k}: {v}\n"
+        # Susun probabilitas agar mudah dibaca
+        for k in CLASS_NAMES:
+            detail_text += f"- {k}: {details.get(k, 'N/A')}\n"
         self.details_label.setText(detail_text)
         
         self.status_label.setText("Prediksi selesai.")
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
     ex = CitrusClassifierApp()
     ex.show()
+    # Gunakan objek 'app' yang sudah dibuat di awal file
     sys.exit(app.exec())
