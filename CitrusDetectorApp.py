@@ -15,7 +15,6 @@ from PyQt6.QtGui import QPixmap, QFont
 from PyQt6.QtCore import Qt
 
 # --- 1. KONFIGURASI GLOBAL ---
-# Menggunakan CUDA jika tersedia (karena ini adalah konfigurasi yang Anda konfirmasi berfungsi)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
 MODEL_PATH = 'EfficientNetV2-L_Citrus.pth' 
 
@@ -28,14 +27,21 @@ CLASS_NAMES = [
 ]
 NUM_CLASSES = len(CLASS_NAMES)
 
-# --- 2. KELAS UTAMA MODEL/BACKEND ---
+CLASS_MAPPING = {
+    'Citrus_Canker_Diseases_Leaf_Orange': 'Penyakit Kanker Jeruk (Canker)',
+    'Citrus_Nutrient_Deficiency_Yellow_Leaf_Orange': 'Kekurangan Nutrisi (Menguning)',
+    'Healthy_Leaf_Orange': 'Daun Sehat',
+    'Multiple_Diseases_Leaf_Orange': 'Berbagai Penyakit (Multiple)',
+    'Young_Healthy_Leaf_Orange': 'Daun Muda Sehat',
+}
+
+# --- 2. KELAS BACKEND MODEL (CitrusPredictor) ---
 
 class CheckpointWrapper(nn.Module):
     def __init__(self, module):
         super().__init__()
         self.module = module
     def forward(self, x):
-        # Memerlukan impor 'from torch.utils.checkpoint import checkpoint'
         from torch.utils.checkpoint import checkpoint 
         return checkpoint(self.module, x, use_reentrant=False)
 
@@ -55,24 +61,20 @@ class CitrusPredictor:
 
         model = models.efficientnet_v2_l(weights=None)
         
-        # Terapkan CheckpointWrapper
         for i, block_sequence in enumerate(model.features):
             if isinstance(block_sequence, nn.Sequential):
                 model.features[i] = CheckpointWrapper(block_sequence)
 
-        # Ubah layer klasifikasi
         num_ftrs = model.classifier[1].in_features
         model.classifier = nn.Sequential(
             nn.Dropout(p=0.4, inplace=True),
             nn.Linear(num_ftrs, NUM_CLASSES)
         )
         
-        # Muat bobot dan pindahkan ke DEVICE (CUDA/CPU)
         state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
         model.load_state_dict(state_dict)
         model.to(DEVICE)
         model.eval()
-        # Tambahkan atribut 'device' ke model untuk pengecekan status
         model.device = DEVICE 
         return model
 
@@ -85,7 +87,6 @@ class CitrusPredictor:
         input_tensor = self.transform(image).unsqueeze(0).to(self.model.device)
 
         with torch.no_grad():
-            # Menggunakan torch.autocast/AMP untuk performa GPU
             with torch.autocast(device_type=self.model.device.type, dtype=torch.float16, enabled=(self.model.device.type == 'cuda')):
                 output = self.model(input_tensor)
         
@@ -99,21 +100,20 @@ class CitrusPredictor:
         
         return predicted_class, confidence, class_details
 
-# --- 3. KELAS GUI UTAMA/FRONTEND ---
+# --- 3. KELAS GUI UTAMA/FRONTEND (CitrusClassifierApp) ---
 
 class CitrusClassifierApp(QWidget):
     def __init__(self, predictor_instance):
         super().__init__()
-        self.predictor = predictor_instance # Menerima instance model yang sudah dimuat
+        self.predictor = predictor_instance
         self.setWindowTitle("🍊 Citrus Disease Classifier (EfficientNetV2-L)")
         self.setGeometry(100, 100, 800, 600)
         self.init_ui()
-        self.predict_button.setEnabled(True) # Langsung aktif karena model sudah dimuat
+        self.predict_button.setEnabled(True)
 
     def init_ui(self):
         main_layout = QHBoxLayout()
 
-        # Panel Kiri (Kontrol dan Hasil)
         left_panel = QVBoxLayout()
         self.select_button = QPushButton("1. Pilih Gambar")
         self.select_button.clicked.connect(self.select_image)
@@ -125,7 +125,7 @@ class CitrusClassifierApp(QWidget):
 
         self.predict_button = QPushButton("2. Prediksi")
         self.predict_button.clicked.connect(self.run_prediction)
-        self.predict_button.setEnabled(False) # Diaktifkan setelah model berhasil dimuat
+        self.predict_button.setEnabled(False)
         left_panel.addWidget(self.predict_button)
         
         self.status_label = QLabel(f"Model Aktif: {self.predictor.model.device.type.upper()}")
@@ -148,11 +148,10 @@ class CitrusClassifierApp(QWidget):
         left_panel.addStretch(1)
         main_layout.addLayout(left_panel)
 
-        # Panel Kanan (Tampilan Gambar)
         self.image_label = QLabel("Tampilan Gambar")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setFixedSize(400, 400)
-        self.image_label.setStyleSheet("border: 1px solid black;")
+        self.image_label.setStyleSheet("border: 1px solid black; background-color: #333;")
         
         right_panel = QVBoxLayout()
         right_panel.addWidget(self.image_label)
@@ -202,13 +201,17 @@ class CitrusClassifierApp(QWidget):
             self.confidence_label.setText(f"Pesan: Gagal memproses gambar.")
             self.status_label.setText("Prediksi gagal.")
             return
-            
-        self.result_label.setText(f"Hasil: **{predicted_class}**")
+        
+        display_class = CLASS_MAPPING.get(predicted_class, predicted_class)
+        self.result_label.setText(f"Hasil: **{display_class}**")
         self.confidence_label.setText(f"Keyakinan: {confidence:.2f}%")
         
         detail_text = "Detail Probabilitas:\n"
-        for k in CLASS_NAMES:
-            detail_text += f"- {k}: {details.get(k, 'N/A')}\n"
+        for class_name_key in CLASS_NAMES:
+            display_name = CLASS_MAPPING.get(class_name_key, class_name_key) 
+            probability_value = details.get(class_name_key, 'N/A')
+            detail_text += f"- {display_name}: {probability_value}\n"
+            
         self.details_label.setText(detail_text)
         
         self.status_label.setText("Prediksi selesai.")
@@ -216,21 +219,17 @@ class CitrusClassifierApp(QWidget):
 # --- 4. EKSEKUSI UTAMA ---
 
 if __name__ == '__main__':
-    # 1. Inisialisasi QApplication (Wajib pertama untuk GUI)
     app = QApplication(sys.argv)
     
-    # 2. Muat model terlebih dahulu (Backend)
     try:
         predictor = CitrusPredictor()
     except FileNotFoundError as e:
         QMessageBox.critical(None, "File Model Error", f"Model tidak ditemukan: {e}")
         sys.exit(1)
     except Exception as e:
-        # Menangkap error DLL / CUDA/PyTorch
         QMessageBox.critical(None, "PyTorch Runtime Error", f"Gagal menginisialisasi PyTorch: {e}")
         sys.exit(1)
 
-    # 3. Buat dan jalankan GUI (Frontend)
     ex = CitrusClassifierApp(predictor)
     ex.show()
     sys.exit(app.exec())
